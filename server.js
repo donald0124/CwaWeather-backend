@@ -20,9 +20,8 @@ app.use(express.urlencoded({ extended: true }));
  * CWA 氣象資料開放平臺 API
  * 使用「一般天氣預報-今明 36 小時天氣預報」資料集
  */
-const getKaohsiungWeather = async (req, res) => {
+const getAllTaiwanWeather = async (req, res) => {
   try {
-    // 檢查是否有設定 API Key
     if (!CWA_API_KEY) {
       return res.status(500).json({
         error: "伺服器設定錯誤",
@@ -30,82 +29,88 @@ const getKaohsiungWeather = async (req, res) => {
       });
     }
 
-    // 呼叫 CWA API - 一般天氣預報（36小時）
-    // API 文件: https://opendata.cwa.gov.tw/dist/opendata-swagger.html
+    // 1. 修改 API 請求：移除 locationName 參數
     const response = await axios.get(
       `${CWA_API_BASE_URL}/v1/rest/datastore/F-C0032-001`,
       {
         params: {
           Authorization: CWA_API_KEY,
-          locationName: "宜蘭縣",
+          // locationName: "宜蘭縣", // <--- 把這行註解掉或刪除
         },
       }
     );
 
-    // 取得高雄市的天氣資料
-    const locationData = response.data.records.location[0];
+    // 取得所有地點的列表 (這是一個陣列)
+    const allLocations = response.data.records.location;
 
-    if (!locationData) {
-      return res.status(404).json({
-        error: "查無資料",
-        message: "無法取得高雄市天氣資料",
-      });
-    }
+    // 2. 修改資料處理：使用 map 遍歷所有縣市
+    const formattedData = allLocations.map((locationData) => {
+      
+      // 整理該縣市的天氣預報
+      const weatherElements = locationData.weatherElement;
+      // 假設每個要素的時間段長度都一樣，取第一個的時間長度
+      const timeCount = weatherElements[0].time.length;
+      
+      const forecasts = [];
 
-    // 整理天氣資料
-    const weatherData = {
-      city: locationData.locationName,
-      updateTime: response.data.records.datasetDescription,
-      forecasts: [],
-    };
+      for (let i = 0; i < timeCount; i++) {
+        const forecast = {
+          startTime: weatherElements[0].time[i].startTime,
+          endTime: weatherElements[0].time[i].endTime,
+          weather: "",
+          rain: "",
+          minTemp: "",
+          maxTemp: "",
+          comfort: "",
+          windSpeed: "", // 註：F-C0032-001 通常只包含 Wx, PoP, MinT, CI, MaxT，不一定有 WS (風速)
+        };
 
-    // 解析天氣要素
-    const weatherElements = locationData.weatherElement;
-    const timeCount = weatherElements[0].time.length;
+        weatherElements.forEach((element) => {
+          // 確保該時間段存在
+          if (element.time[i]) {
+            const value = element.time[i].parameter;
+            switch (element.elementName) {
+              case "Wx":
+                forecast.weather = value.parameterName;
+                break;
+              case "PoP":
+                forecast.rain = value.parameterName + "%";
+                break;
+              case "MinT":
+                forecast.minTemp = value.parameterName + "°C";
+                break;
+              case "MaxT":
+                forecast.maxTemp = value.parameterName + "°C";
+                break;
+              case "CI":
+                forecast.comfort = value.parameterName;
+                break;
+              // 一般天氣預報 (F-C0032-001) 有時不包含風速，視 API 回傳而定
+              case "WS": 
+                forecast.windSpeed = value.parameterName;
+                break;
+            }
+          }
+        });
+        forecasts.push(forecast);
+      }
 
-    for (let i = 0; i < timeCount; i++) {
-      const forecast = {
-        startTime: weatherElements[0].time[i].startTime,
-        endTime: weatherElements[0].time[i].endTime,
-        weather: "",
-        rain: "",
-        minTemp: "",
-        maxTemp: "",
-        comfort: "",
-        windSpeed: "",
+      // 回傳單一縣市整理好的物件
+      return {
+        city: locationData.locationName,
+        forecasts: forecasts,
       };
-
-      weatherElements.forEach((element) => {
-        const value = element.time[i].parameter;
-        switch (element.elementName) {
-          case "Wx":
-            forecast.weather = value.parameterName;
-            break;
-          case "PoP":
-            forecast.rain = value.parameterName + "%";
-            break;
-          case "MinT":
-            forecast.minTemp = value.parameterName + "°C";
-            break;
-          case "MaxT":
-            forecast.maxTemp = value.parameterName + "°C";
-            break;
-          case "CI":
-            forecast.comfort = value.parameterName;
-            break;
-          case "WS":
-            forecast.windSpeed = value.parameterName;
-            break;
-        }
-      });
-
-      weatherData.forecasts.push(forecast);
-    }
+    });
 
     res.json({
       success: true,
-      data: weatherData,
+      data: {
+        updateTime: response.data.records.datasetDescription,
+        locations: formattedData, // 這裡是所有縣市的陣列
+      },
     });
+
+
   } catch (error) {
     console.error("取得天氣資料失敗:", error.message);
 
@@ -131,7 +136,7 @@ app.get("/", (req, res) => {
   res.json({
     message: "歡迎使用 CWA 天氣預報 API",
     endpoints: {
-      kaohsiung: "/api/weather/kaohsiung",
+      allcityweather: "/api/weather/all",
       health: "/api/health",
     },
   });
@@ -142,7 +147,7 @@ app.get("/api/health", (req, res) => {
 });
 
 // 取得高雄天氣預報
-app.get("/api/weather/kaohsiung", getKaohsiungWeather);
+app.get("/api/weather/all", getAllTaiwanWeather);
 
 // Error handling middleware
 app.use((err, req, res, next) => {
